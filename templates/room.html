@@ -1,1 +1,155 @@
+{% extends 'base.html' %}
 
+{% block title %}Chat Room: {{code}}{% endblock %}
+
+{% block content %}
+<div class="chat-container">
+  <h2>Welcome to Chat Room: <span class="room-code">{{code}}</span></h2>
+
+  <!-- Messages Display -->
+  <div class="messages" id="messages" aria-live="polite" aria-atomic="true">
+    {% for msg in messages %}
+    <div class="text">
+      <span>
+        <strong>{{msg.name}}</strong>: {{msg.message}}
+      </span>
+      <span class="muted">{{msg.timestamp}}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Message Input -->
+  <div class="message-input">
+    <textarea
+      rows="2"
+      placeholder="Type your message here..."
+      name="message"
+      id="message"
+      aria-label="Message"
+    ></textarea>
+    <button type="button" id="send-btn" onClick="sendMessage()">Send</button>
+  </div>
+
+  <!-- Video/Audio Chat -->
+  <div class="video-chat">
+    <video id="local-video" autoplay muted></video>
+    <video id="remote-video" autoplay></video>
+
+    <div class="controls">
+      <button id="start-call-btn" onclick="startCall()">Start Call</button>
+      <button id="end-call-btn" onclick="endCall()">End Call</button>
+      <button id="mute-btn" onclick="toggleMute()">Mute</button>
+    </div>
+  </div>
+</div>
+
+<!-- JavaScript -->
+<script type="text/javascript">
+  var socketio = io();
+
+  const messages = document.getElementById("messages");
+
+  // Create and display a message
+  const createMessage = (name, msg, timestamp = new Date().toLocaleString()) => {
+    const messageElement = document.createElement("div");
+    messageElement.classList.add("text");
+
+    messageElement.innerHTML = `
+      <span>
+        <strong>${name}</strong>: ${msg}
+      </span>
+      <span class="muted">${timestamp}</span>
+    `;
+    messages.appendChild(messageElement);
+    messages.scrollTop = messages.scrollHeight; // Auto-scroll to the latest message
+  };
+
+  // Listen for incoming messages
+  socketio.on("message", (data) => {
+    createMessage(data.name, data.message);
+  });
+
+  // Send a message to the server
+  const sendMessage = () => {
+    const message = document.getElementById("message");
+    if (message.value.trim() === "") return; // Ignore empty messages
+    socketio.emit("message", { data: message.value });
+    createMessage("You", message.value); // Display sent message locally
+    message.value = "";
+  };
+
+  // WebRTC Variables
+  let localStream;
+  let remoteStream;
+  let peerConnection;
+  const localVideo = document.getElementById('local-video');
+  const remoteVideo = document.getElementById('remote-video');
+  const startCallBtn = document.getElementById('start-call-btn');
+  const endCallBtn = document.getElementById('end-call-btn');
+  const muteBtn = document.getElementById('mute-btn');
+  let isMuted = false;
+
+  // Start WebRTC Call
+  const startCall = async () => {
+    const constraints = { video: true, audio: true };
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    localVideo.srcObject = localStream;
+
+    peerConnection = new RTCPeerConnection();
+    localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+    peerConnection.ontrack = (event) => {
+      remoteStream = event.streams[0];
+      remoteVideo.srcObject = remoteStream;
+    };
+
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate) {
+        socketio.emit('ice_candidate', { candidate: event.candidate, to: "other-user" });
+      }
+    };
+
+    // Emit the offer to start the call
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    socketio.emit("offer", { offer: offer });
+  };
+
+  // Handle WebRTC Answer
+  socketio.on('answer', async (data) => {
+    if (data.from !== "You") {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+    }
+  });
+
+  // Handle ICE candidates
+  socketio.on('ice_candidate', (data) => {
+    if (data.from !== "You") {
+      peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+    }
+  });
+
+  // End WebRTC Call
+  const endCall = () => {
+    peerConnection.close();
+    localStream.getTracks().forEach(track => track.stop());
+    remoteStream.getTracks().forEach(track => track.stop());
+    localVideo.srcObject = null;
+    remoteVideo.srcObject = null;
+  };
+
+  // Toggle Mute
+  const toggleMute = () => {
+    const audioTrack = localStream.getAudioTracks()[0];
+    isMuted = !isMuted;
+    audioTrack.enabled = !isMuted;
+    muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
+  };
+
+  // Handle User Media Permissions
+  navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+    .catch(err => {
+      console.error('Error accessing media devices.', err);
+    });
+</script>
+{% endblock %}
